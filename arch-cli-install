@@ -21,8 +21,10 @@ sets() {
     export HOSTNAME="archlinux"
     export EDITOR="vim"
     export USERNAME="arch"
+    export USERPASSWORD="arch"
+    export ROOTPASSWORD="root"
     export KERNEL="linux"
-    read -p "The defaults is disk $DISK, new root $DIR and $FS it's fs, $SWP to swap option, $USERNAME for user, $HOSTNAME is hostname, $EDITOR - system editor, default kernel $KERNEL. Override? (y/n): " DFLTS 
+    read -p "The defaults is disk $DISK, new root $DIR and $FS it's fs, $SWP to swap option, $USERNAME for user, $USERPASSWORD for user password, $ROOTPASSWORD for root password, $HOSTNAME is hostname, $EDITOR - system editor, default kernel $KERNEL. Override? (y/n): " DFLTS
 }
 
 execute() {
@@ -51,22 +53,25 @@ reads() {
     clear
     cat /proc/filesystems
     echo ""
-    read -p "Enter file system for root (eg. ext4) " FS
+    read -p "Enter file system for root (eg. ext4): " FS
     clear
-    read -p "Enter your prefered text editor (eg. vim)" EDITOR
-    read -p "Enter your username (eg. arch)" USERNAME
-    read -p "Enter your hostname (eg. archlinux)" EDITOR
-    read -p "Enter linux kernel type to install. Remember - in Arch repo there is only linux, linux-hardened, linux-lts, linux-rt, linux-rt-lts and linux-zen! (eg. linux-lts)" KERNEL
+    read -p "Enter your prefered text editor (eg. vim): " EDITOR
+    read -p "Enter your username (eg. arch): " USERNAME
+    read -p "Enter password for user: " USERPASSWORD
+    read -p "Enter password for root: " ROOTPASSWORD
+    read -p "Enter your hostname (eg. archlinux): " HOST
+    read -p "Enter linux kernel type to install. Remember - in Arch repo there is only linux, linux-hardened, linux-lts, linux-rt, linux-rt-lts and linux-zen! (eg. linux-lts): " KERNEL
     read -p "Use swap? (y/n): " SWP
 }
 
 party() {
     parted $DISK -- mklabel gpt
     parted $DISK -- mkpart ESP fat32 1MB 1GB
-    parted $DISK -- set 3 esp on
+    parted $DISK -- set 1 esp on
 }
 
 connect() {
+    mkfs.ext4 /dev/disk/by-partlabel/root
     mount /dev/disk/by-partlabel/root $DIR
     mkdir -p $DIR/boot
     mount /dev/disk/by-partlabel/ESP $DIR/boot
@@ -80,16 +85,18 @@ disks() {
             read -p "Enter how much GB swap will be. Rationally swap is 1/2 of your current RAM. " SWPGB
             echo "Swap option is enabled, swap is $SWPGB GB!"
             party
-            parted $DISK -- mkpart root $FS 1GB -$SWPGB
-            parted $DISK -- mkpart swap linux-swap $SWPGB 100%
+            parted $DISK -- mkpart root $FS 1GB -"$SWPGB"GB
+            parted $DISK -- mkpart swap linux-swap -"$SWPGB"GB 100%
             echo "Mounting disks into $DIR with swap enabled."
+            sleep 3
             connect
+            mkswap /dev/disk/by-partlabel/swap
             swapon /dev/disk/by-partlabel/swap
         ;;
         n | no | NO | No)
             echo "Swap option is disabled."
             party
-            parted $DISK -- mkpart root $FS 1GB -1GB
+            parted $DISK -- mkpart root $FS 1GB 100%
             echo "Mounting disks into $DIR with swap disabled."
             connect
         ;;
@@ -102,11 +109,11 @@ disks() {
 
 
 strap() {
-    reflector --latest 200 --protocol http,https --sort rate --save /etc/pacman.d/mirrorlist
-    pacstrap $DIR base base-devel binutils $EDITOR
+    ROOTUUID=$(lsblk -no UUID /dev/disk/by-partlabel/root)
+    pacstrap -K $DIR base base-devel binutils $EDITOR
     genfstab -U $DIR >> $DIR/etc/fstab
-    cat "en_US.UTF-8 UTF-8" >> $DIR/etc/locale.gen
-    cat "LANG=en_US.UTF-8 UTF-8" >> $DIR/etc/locale.conf
+    echo "en_US.UTF-8 UTF-8" >> $DIR/etc/locale.gen
+    echo "LANG=en_US.UTF-8" >> $DIR/etc/locale.conf
     cat > $DIR/etc/hosts << EOF
 ####################
 127.0.0.1 localhost
@@ -122,13 +129,22 @@ Defaults:root,%wheel env_keep+=TERMINFO_DIRS
 Defaults:root,%wheel env_keep+=TERMINFO
 #############################################
 EOF
-    cat $HOST >> $DIR/etc/hostname
+    echo $HOST >> $DIR/etc/hostname
     sleep 5
     arch-chroot $DIR /bin/bash << EOF
-pacman -Syyu $KERNEL $KERNEL-headers linux-firmware
+locale-gen
+pacman -Syyu --noconfirm $KERNEL $KERNEL-headers linux-firmware
 useradd -m -U -G wheel $USERNAME
-bootctl enable
+echo $ROOTPASSWORD | passwd -s
+echo $USERPASSWORD | passwd -s $USER
+bootctl install
 exit
+EOF
+    cat > $DIR/boot/loader/entries/arch.conf << EOF
+title Arch Linux
+linux /vmlinuz-$KERNEL
+initrd /initramfs-$KERNEL.img
+options root=UUID=$ROOTUUID rw
 EOF
 }
 
